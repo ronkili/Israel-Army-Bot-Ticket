@@ -1,0 +1,30 @@
+ISRAEL ARMY BOT TICKET — RAILWAY
+
+1. Upload:
+   index.js
+   deploy-commands.js
+   config.js
+   package.json
+
+2. Railway Variables:
+   TOKEN=your_discord_bot_token
+
+3. Railway Volume:
+   /app/data
+
+4. Start Command:
+   npm run deploy && npm start
+
+5. Discord Developer Portal:
+   Enable:
+   - SERVER MEMBERS INTENT
+   - MESSAGE CONTENT INTENT
+
+6. Bot permissions recommended:
+   - View Channels
+   - Send Messages
+   - Embed Links
+   - Attach Files
+   - Read Message History
+   - Manage Channels
+   - Manage Messages
