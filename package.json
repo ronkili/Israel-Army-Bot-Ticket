@@ -1,0 +1,17 @@
+{
+  "name": "israel-army-bot-ticket",
+  "version": "1.0.0",
+  "description": "Israel Army Discord ticket bot for Railway",
+  "main": "index.js",
+  "scripts": {
+    "start": "node index.js",
+    "deploy": "node deploy-commands.js"
+  },
+  "engines": {
+    "node": "22.x"
+  },
+  "dependencies": {
+    "discord.js": "^14.22.1",
+    "dotenv": "^16.6.1"
+  }
+}
