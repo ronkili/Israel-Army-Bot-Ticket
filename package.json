@@ -1,7 +1,7 @@
 {
-  "name": "israel-army-bot-ticket",
-  "version": "1.0.0",
-  "description": "Israel Army Discord ticket bot for Railway",
+  "name": "the-club-bot",
+  "version": "2.0.0",
+  "description": "The Club Discord bot - ticket system and virtual XP casino",
   "main": "index.js",
   "scripts": {
     "start": "node index.js",
