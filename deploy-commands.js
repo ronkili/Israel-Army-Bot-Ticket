@@ -11,7 +11,7 @@ const config = require("./config");
 const commands = [
   new SlashCommandBuilder()
     .setName("ticket-panel")
-    .setDescription("שולח את פאנל הטיקטים של Israel Army")
+    .setDescription("שולח את פאנל הטיקטים של The Club")
 ].map(command => command.toJSON());
 
 const rest = new REST({ version: "10" })
@@ -19,7 +19,7 @@ const rest = new REST({ version: "10" })
 
 (async () => {
   try {
-    console.log("🔄 Deploying Israel Army ticket commands...");
+    console.log("🔄 Deploying The Club ticket commands...");
 
     await rest.put(
       Routes.applicationGuildCommands(
