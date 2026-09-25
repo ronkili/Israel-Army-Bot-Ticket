@@ -1,4 +1,4 @@
-ISRAEL ARMY BOT TICKET — RAILWAY
+THE CLUB BOT — RAILWAY
 
 1. Upload:
    index.js
@@ -28,3 +28,25 @@ ISRAEL ARMY BOT TICKET — RAILWAY
    - Read Message History
    - Manage Channels
    - Manage Messages
+
+
+THE CLUB CASINO
+
+Virtual XP only. No real-money deposits, purchases or cashout.
+
+Commands:
+!xp / !balance
+!daily
+!coinflip <xp> <heads/tails>
+!dice <xp> <1-6>
+!slots <xp>
+!roulette <xp> <red/black/green>
+!blackjack <xp> / !bj <xp>
+!leaderboard / !lb
+!casino
+
+XP data is stored at:
+/app/data/xp.json
+
+Keep the Railway Volume mounted at:
+/app/data
