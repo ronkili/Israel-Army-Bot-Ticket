@@ -413,6 +413,359 @@ async function finishBlackjack(
   });
 }
 
+const VERIFY_READ_ONLY_NAME_HINTS = [
+  "updates",
+  "update",
+  "server-updates",
+  "announcements",
+  "announcement",
+  "news",
+  "rules",
+  "עדכונים",
+  "חדשות",
+  "חוקים"
+];
+
+function normalizeChannelName(name) {
+  return String(name || "")
+    .toLowerCase()
+    .replace(/[_\s]+/g, "-");
+}
+
+function isVerifyReadOnlyChannel(channel) {
+  const configuredIds =
+    Array.isArray(config.verifyReadOnlyChannelIds)
+      ? config.verifyReadOnlyChannelIds
+      : [];
+
+  if (configuredIds.includes(channel.id)) {
+    return true;
+  }
+
+  const normalized =
+    normalizeChannelName(channel.name);
+
+  return VERIFY_READ_ONLY_NAME_HINTS.some(
+    hint =>
+      normalized.includes(
+        normalizeChannelName(hint)
+      )
+  );
+}
+
+function canEditChannelPermissions(channel) {
+  return Boolean(
+    channel &&
+    !channel.isThread?.() &&
+    channel.permissionOverwrites &&
+    typeof channel.permissionOverwrites.edit === "function"
+  );
+}
+
+async function setupVerifyPermissions(interaction) {
+  const guild =
+    interaction.guild;
+
+  const verifyChannel =
+    interaction.channel;
+
+  if (
+    !guild ||
+    !verifyChannel ||
+    !verifyChannel.isTextBased()
+  ) {
+    throw new Error(
+      "VERIFY_CHANNEL_INVALID"
+    );
+  }
+
+  if (!config.memberRoleId) {
+    throw new Error(
+      "MEMBER_ROLE_NOT_CONFIGURED"
+    );
+  }
+
+  const memberRole =
+    await guild.roles
+      .fetch(config.memberRoleId)
+      .catch(() => null);
+
+  if (!memberRole) {
+    throw new Error(
+      "MEMBER_ROLE_NOT_FOUND"
+    );
+  }
+
+  if (memberRole.managed) {
+    throw new Error(
+      "MEMBER_ROLE_MANAGED"
+    );
+  }
+
+  const botMember =
+    await guild.members
+      .fetchMe()
+      .catch(() => null);
+
+  if (!botMember) {
+    throw new Error(
+      "BOT_MEMBER_NOT_FOUND"
+    );
+  }
+
+  if (
+    !botMember.permissions.has(
+      PermissionFlagsBits.ManageChannels
+    )
+  ) {
+    throw new Error(
+      "BOT_MISSING_MANAGE_CHANNELS"
+    );
+  }
+
+  if (
+    !botMember.permissions.has(
+      PermissionFlagsBits.ManageRoles
+    )
+  ) {
+    throw new Error(
+      "BOT_MISSING_MANAGE_ROLES"
+    );
+  }
+
+  if (
+    memberRole.position >=
+    botMember.roles.highest.position
+  ) {
+    throw new Error(
+      "BOT_ROLE_TOO_LOW"
+    );
+  }
+
+  const everyoneRole =
+    guild.roles.everyone;
+
+  const channels =
+    await guild.channels.fetch();
+
+  // Snapshot only channels that are public BEFORE setup.
+  // Private Staff/Admin channels are intentionally skipped.
+  const publicChannels =
+    [...channels.values()]
+      .filter(channel => {
+        if (
+          !canEditChannelPermissions(channel)
+        ) {
+          return false;
+        }
+
+        if (
+          channel.id ===
+          verifyChannel.id
+        ) {
+          return false;
+        }
+
+        const everyonePermissions =
+          channel.permissionsFor(
+            everyoneRole
+          );
+
+        return Boolean(
+          everyonePermissions?.has(
+            PermissionFlagsBits.ViewChannel
+          )
+        );
+      });
+
+  // Verify stays visible to @everyone, but read-only.
+  await verifyChannel
+    .permissionOverwrites
+    .edit(
+      everyoneRole,
+      {
+        ViewChannel: true,
+        SendMessages: false,
+        AddReactions: false,
+        CreatePublicThreads: false,
+        CreatePrivateThreads: false,
+        SendMessagesInThreads: false
+      },
+      {
+        reason:
+          "The Club automatic Verify setup"
+      }
+    );
+
+  let lockedChannels = 0;
+  let readOnlyChannels = 0;
+  let failedChannels = 0;
+
+  const orderedChannels =
+    publicChannels.sort(
+      (a, b) => {
+        const aCategory =
+          a.type ===
+          ChannelType.GuildCategory
+            ? 0
+            : 1;
+
+        const bCategory =
+          b.type ===
+          ChannelType.GuildCategory
+            ? 0
+            : 1;
+
+        return aCategory - bCategory;
+      }
+    );
+
+  for (const channel of orderedChannels) {
+    try {
+      await channel
+        .permissionOverwrites
+        .edit(
+          everyoneRole,
+          {
+            ViewChannel: false
+          },
+          {
+            reason:
+              "The Club automatic Member-only setup"
+          }
+        );
+
+      const memberPermissions = {
+        ViewChannel: true
+      };
+
+      const readOnly =
+        isVerifyReadOnlyChannel(channel);
+
+      if (readOnly) {
+        memberPermissions.SendMessages = false;
+        memberPermissions.AddReactions = false;
+        memberPermissions.CreatePublicThreads = false;
+        memberPermissions.CreatePrivateThreads = false;
+        memberPermissions.SendMessagesInThreads = false;
+      }
+
+      await channel
+        .permissionOverwrites
+        .edit(
+          memberRole,
+          memberPermissions,
+          {
+            reason:
+              readOnly
+                ? "The Club Member read-only channel"
+                : "The Club Member-only channel"
+          }
+        );
+
+      lockedChannels += 1;
+
+      if (readOnly) {
+        readOnlyChannels += 1;
+      }
+    } catch (error) {
+      failedChannels += 1;
+
+      console.error(
+        `❌ Verify setup failed for channel ${channel.id}:`,
+        error
+      );
+    }
+  }
+
+  return {
+    memberRole,
+    verifyChannel,
+    lockedChannels,
+    readOnlyChannels,
+    failedChannels
+  };
+}
+
+function verifySetupResultEmbed(result) {
+  return new EmbedBuilder()
+    .setColor(
+      result.failedChannels
+        ? "Orange"
+        : "Green"
+    )
+    .setTitle(
+      "✅ Verify Setup הושלם"
+    )
+    .setDescription(
+      [
+        `🔐 **${result.lockedChannels}** חדרים ציבוריים הפכו ל־Members בלבד.`,
+        `📢 **${result.readOnlyChannels}** חדרים הוגדרו לקריאה בלבד.`,
+        `⚠️ **${result.failedChannels}** חדרים לא עודכנו בגלל הרשאות/שגיאה.`,
+        "",
+        `✅ חדר ה־Verify נשאר פתוח לכולם: ${result.verifyChannel}`,
+        `👥 רול Member: ${result.memberRole}`,
+        "",
+        "חדרי Staff/Admin שכבר היו פרטיים לא נפתחו ל־Members."
+      ].join("\n")
+    )
+    .setFooter({
+      text:
+        "The Club • Automatic Verify Setup"
+    })
+    .setTimestamp();
+}
+
+function buildVerifyPanel() {
+  const embed =
+    new EmbedBuilder()
+      .setColor("Green")
+      .setTitle(
+        "✅ The Club • Verify"
+      )
+      .setDescription(
+        [
+          "ברוכים הבאים ל־**The Club**!",
+          "",
+          "לחצו על הכפתור **Verify** כדי לקבל גישה לשרת.",
+          "",
+          "לאחר האימות תקבלו אוטומטית את רול ה־Member."
+        ].join("\n")
+      )
+      .setFooter({
+        text:
+          "The Club • Verification System"
+      })
+      .setTimestamp();
+
+  if (client.user) {
+    embed.setThumbnail(
+      client.user.displayAvatarURL({
+        size: 256
+      })
+    );
+  }
+
+  const row =
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            "verify_member"
+          )
+          .setLabel("Verify")
+          .setEmoji("✅")
+          .setStyle(
+            ButtonStyle.Success
+          )
+      );
+
+  return {
+    embeds: [embed],
+    components: [row]
+  };
+}
+
 function canSendPanel(member, guild) {
   return Boolean(
     member?.id === guild?.ownerId ||
@@ -859,6 +1212,120 @@ client.once(Events.ClientReady, readyClient => {
 client.on(Events.InteractionCreate, async interaction => {
   try {
     if (interaction.isChatInputCommand()) {
+      if (
+        interaction.commandName ===
+        "setup-verify"
+      ) {
+        if (
+          !canSendPanel(
+            interaction.member,
+            interaction.guild
+          )
+        ) {
+          return interaction.reply({
+            content:
+              "❌ אין לך גישה להריץ את Setup ה־Verify.",
+            flags:
+              MessageFlags.Ephemeral
+          });
+        }
+
+        if (
+          !interaction.channel?.isTextBased()
+        ) {
+          return interaction.reply({
+            content:
+              "❌ תריץ את `/setup-verify` בתוך חדר ה־Verify.",
+            flags:
+              MessageFlags.Ephemeral
+          });
+        }
+
+        await interaction.deferReply({
+          flags:
+            MessageFlags.Ephemeral
+        });
+
+        try {
+          const result =
+            await setupVerifyPermissions(
+              interaction
+            );
+
+          await interaction.channel.send(
+            buildVerifyPanel()
+          );
+
+          return interaction.editReply({
+            embeds: [
+              verifySetupResultEmbed(
+                result
+              )
+            ]
+          });
+        } catch (error) {
+          console.error(
+            "❌ setup-verify error:",
+            error
+          );
+
+          const errors = {
+            MEMBER_ROLE_NOT_CONFIGURED:
+              "❌ חסר `memberRoleId` ב־config.js.",
+            MEMBER_ROLE_NOT_FOUND:
+              "❌ לא מצאתי את רול ה־Member שהוגדר.",
+            MEMBER_ROLE_MANAGED:
+              "❌ רול ה־Member הוא Managed Role ואי אפשר להשתמש בו.",
+            BOT_MEMBER_NOT_FOUND:
+              "❌ לא הצלחתי לטעון את הבוט בשרת.",
+            BOT_MISSING_MANAGE_CHANNELS:
+              "❌ לבוט חסרה הרשאת `Manage Channels`.",
+            BOT_MISSING_MANAGE_ROLES:
+              "❌ לבוט חסרה הרשאת `Manage Roles`.",
+            BOT_ROLE_TOO_LOW:
+              "❌ רול The Club Bot נמוך מדי. תעלה אותו מעל רול ה־Member.",
+            VERIFY_CHANNEL_INVALID:
+              "❌ תריץ את הפקודה בתוך חדר טקסט שישמש כחדר Verify."
+          };
+
+          return interaction.editReply({
+            content:
+              errors[error.message] ||
+              "❌ הייתה שגיאה בזמן הגדרת מערכת ה־Verify."
+          });
+        }
+      }
+
+      if (
+        interaction.commandName ===
+        "verify-panel"
+      ) {
+        if (
+          !canSendPanel(
+            interaction.member,
+            interaction.guild
+          )
+        ) {
+          return interaction.reply({
+            content:
+              "❌ אין לך גישה לשלוח את פאנל ה־Verify.",
+            flags:
+              MessageFlags.Ephemeral
+          });
+        }
+
+        await interaction.channel.send(
+          buildVerifyPanel()
+        );
+
+        return interaction.reply({
+          content:
+            "✅ פאנל ה־Verify נשלח.",
+          flags:
+            MessageFlags.Ephemeral
+        });
+      }
+
       if (interaction.commandName === "ticket-panel") {
         if (!canSendPanel(interaction.member, interaction.guild)) {
           return interaction.reply({
@@ -956,6 +1423,131 @@ client.on(Events.InteractionCreate, async interaction => {
         interaction,
         game
       );
+    }
+
+    if (
+      interaction.isButton() &&
+      interaction.customId ===
+        "verify_member"
+    ) {
+      if (!config.memberRoleId) {
+        return interaction.reply({
+          content:
+            "❌ חסר `memberRoleId` ב־config.js.",
+          flags:
+            MessageFlags.Ephemeral
+        });
+      }
+
+      const member =
+        await interaction.guild.members
+          .fetch(
+            interaction.user.id
+          )
+          .catch(() => null);
+
+      const botMember =
+        await interaction.guild.members
+          .fetchMe()
+          .catch(() => null);
+
+      const role =
+        await interaction.guild.roles
+          .fetch(
+            config.memberRoleId
+          )
+          .catch(() => null);
+
+      if (!member || !botMember) {
+        return interaction.reply({
+          content:
+            "❌ לא הצלחתי לטעון את המשתמש או הבוט.",
+          flags:
+            MessageFlags.Ephemeral
+        });
+      }
+
+      if (!role) {
+        return interaction.reply({
+          content:
+            "❌ לא מצאתי את רול ה־Member שהוגדר.",
+          flags:
+            MessageFlags.Ephemeral
+        });
+      }
+
+      if (
+        member.roles.cache.has(
+          role.id
+        )
+      ) {
+        return interaction.reply({
+          content:
+            "✅ אתה כבר מאומת.",
+          flags:
+            MessageFlags.Ephemeral
+        });
+      }
+
+      if (role.managed) {
+        return interaction.reply({
+          content:
+            "❌ רול ה־Member הוא Managed Role ואי אפשר לתת אותו ידנית.",
+          flags:
+            MessageFlags.Ephemeral
+        });
+      }
+
+      if (
+        !botMember.permissions.has(
+          PermissionFlagsBits.ManageRoles
+        )
+      ) {
+        return interaction.reply({
+          content:
+            "❌ לבוט אין הרשאת `Manage Roles`.",
+          flags:
+            MessageFlags.Ephemeral
+        });
+      }
+
+      if (
+        role.position >=
+        botMember.roles.highest.position
+      ) {
+        return interaction.reply({
+          content:
+            "❌ רול The Club Bot חייב להיות מעל רול ה־Member.",
+          flags:
+            MessageFlags.Ephemeral
+        });
+      }
+
+      try {
+        await member.roles.add(
+          role,
+          "The Club Verify completed"
+        );
+      } catch (error) {
+        console.error(
+          "❌ Verify role add error:",
+          error
+        );
+
+        return interaction.reply({
+          content:
+            "❌ לא הצלחתי לתת את רול ה־Member.",
+          flags:
+            MessageFlags.Ephemeral
+        });
+      }
+
+      return interaction.reply({
+        content:
+          "✅ אומתת בהצלחה! קיבלת גישה לשרת.",
+        flags:
+          MessageFlags.Ephemeral
+      });
     }
 
     if (
