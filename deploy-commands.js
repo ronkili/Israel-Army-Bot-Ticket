@@ -10,6 +10,18 @@ const config = require("./config");
 
 const commands = [
   new SlashCommandBuilder()
+    .setName("setup-verify")
+    .setDescription(
+      "מגדיר Verify והרשאות Members אוטומטית"
+    ),
+
+  new SlashCommandBuilder()
+    .setName("verify-panel")
+    .setDescription(
+      "שולח את פאנל ה־Verify של The Club"
+    ),
+
+  new SlashCommandBuilder()
     .setName("ticket-panel")
     .setDescription("שולח את פאנל הטיקטים של The Club")
 ].map(command => command.toJSON());
