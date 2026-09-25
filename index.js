@@ -37,6 +37,8 @@ if (!fs.existsSync(DATA_DIR)) {
 
 const TICKET_DATA_FILE = path.join(DATA_DIR, "tickets.json");
 
+const XP_DATA_FILE = path.join(DATA_DIR, "xp.json");
+
 function loadJson(file, fallback) {
   try {
     if (!fs.existsSync(file)) return fallback;
@@ -55,8 +57,360 @@ function saveJson(file, data) {
 
 const ticketData = loadJson(TICKET_DATA_FILE, { tickets: {} });
 
+const xpData = loadJson(XP_DATA_FILE, { guilds: {} });
+
+const messageXpCooldowns = new Map();
+const casinoCooldowns = new Map();
+const blackjackGames = new Map();
+
 function saveTicketData() {
   saveJson(TICKET_DATA_FILE, ticketData);
+}
+
+
+function saveXpData() {
+  saveJson(XP_DATA_FILE, xpData);
+}
+
+function getGuildXp(guildId) {
+  if (!xpData.guilds[guildId]) {
+    xpData.guilds[guildId] = { users: {} };
+  }
+
+  if (!xpData.guilds[guildId].users) {
+    xpData.guilds[guildId].users = {};
+  }
+
+  return xpData.guilds[guildId];
+}
+
+function getXpProfile(guildId, userId) {
+  const guildData = getGuildXp(guildId);
+
+  if (!guildData.users[userId]) {
+    guildData.users[userId] = {
+      xp: 0,
+      messages: 0,
+      lastDailyAt: 0
+    };
+  }
+
+  const profile = guildData.users[userId];
+
+  profile.xp = Math.max(0, Number(profile.xp || 0));
+  profile.messages = Math.max(0, Number(profile.messages || 0));
+  profile.lastDailyAt = Math.max(0, Number(profile.lastDailyAt || 0));
+
+  return profile;
+}
+
+function changeXp(guildId, userId, amount) {
+  const profile = getXpProfile(guildId, userId);
+
+  profile.xp = Math.max(
+    0,
+    profile.xp + Number(amount || 0)
+  );
+
+  saveXpData();
+
+  return profile.xp;
+}
+
+function randomInt(min, max) {
+  return Math.floor(
+    Math.random() * (max - min + 1)
+  ) + min;
+}
+
+function formatXp(value) {
+  return Number(value || 0).toLocaleString("en-US");
+}
+
+function casinoCheck(guildId, userId, bet) {
+  const amount = Number(bet);
+
+  if (!Number.isInteger(amount) || amount <= 0) {
+    return {
+      ok: false,
+      message:
+        "❌ סכום ה־XP חייב להיות מספר שלם וחיובי."
+    };
+  }
+
+  const maxBet =
+    Number(config.maxCasinoBet || 1000);
+
+  if (amount > maxBet) {
+    return {
+      ok: false,
+      message:
+        `❌ המקסימום למשחק הוא **${formatXp(maxBet)} XP**.`
+    };
+  }
+
+  const profile =
+    getXpProfile(guildId, userId);
+
+  if (profile.xp < amount) {
+    return {
+      ok: false,
+      message:
+        `❌ אין לך מספיק XP. יש לך **${formatXp(profile.xp)} XP**.`
+    };
+  }
+
+  const key =
+    `${guildId}:${userId}`;
+
+  const cooldownMs =
+    Number(
+      config.casinoCooldownMs ||
+      5000
+    );
+
+  const last =
+    casinoCooldowns.get(key) || 0;
+
+  const left =
+    cooldownMs -
+    (Date.now() - last);
+
+  if (left > 0) {
+    return {
+      ok: false,
+      message:
+        `⏳ חכה עוד **${Math.ceil(left / 1000)} שניות** לפני משחק נוסף.`
+    };
+  }
+
+  casinoCooldowns.set(
+    key,
+    Date.now()
+  );
+
+  return {
+    ok: true,
+    bet: amount
+  };
+}
+
+function casinoInfoEmbed() {
+  return new EmbedBuilder()
+    .setColor("Gold")
+    .setTitle("🎰 The Club Casino")
+    .setDescription(
+      [
+        "ברוכים הבאים לקזינו של **The Club**.",
+        "",
+        "🎮 כל המשחקים משתמשים ב־**XP וירטואלי בלבד**.",
+        "ל־XP אין ערך כספי, אי אפשר לקנות אותו ואין Cashout.",
+        "",
+        "**פקודות:**",
+        "`!xp` / `!balance` — יתרת XP",
+        "`!daily` — בונוס יומי",
+        "`!coinflip <xp> <heads/tails>`",
+        "`!dice <xp> <1-6>`",
+        "`!slots <xp>`",
+        "`!roulette <xp> <red/black/green>`",
+        "`!blackjack <xp>` / `!bj <xp>`",
+        "`!leaderboard` / `!lb` — Top 10",
+        "`!casino` — המידע הזה",
+        "",
+        `💰 Max bet: **${formatXp(config.maxCasinoBet || 1000)} XP**`,
+        `⏱️ Cooldown: **${Math.ceil(Number(config.casinoCooldownMs || 5000) / 1000)} שניות**`
+      ].join("\\n")
+    )
+    .setFooter({
+      text:
+        "The Club Casino • Virtual XP only"
+    })
+    .setTimestamp();
+}
+
+function drawCard() {
+  const cards = [
+    2, 3, 4, 5, 6, 7, 8, 9, 10,
+    10, 10, 10, 11
+  ];
+
+  return cards[
+    Math.floor(
+      Math.random() *
+      cards.length
+    )
+  ];
+}
+
+function handValue(cards) {
+  let total =
+    cards.reduce(
+      (sum, card) =>
+        sum + card,
+      0
+    );
+
+  let aces =
+    cards.filter(
+      card => card === 11
+    ).length;
+
+  while (
+    total > 21 &&
+    aces > 0
+  ) {
+    total -= 10;
+    aces -= 1;
+  }
+
+  return total;
+}
+
+function blackjackButtons(userId) {
+  return [
+    new ActionRowBuilder()
+      .addComponents(
+        new ButtonBuilder()
+          .setCustomId(
+            `bj_hit:${userId}`
+          )
+          .setLabel("Hit")
+          .setEmoji("🃏")
+          .setStyle(
+            ButtonStyle.Primary
+          ),
+
+        new ButtonBuilder()
+          .setCustomId(
+            `bj_stand:${userId}`
+          )
+          .setLabel("Stand")
+          .setEmoji("✋")
+          .setStyle(
+            ButtonStyle.Success
+          )
+      )
+  ];
+}
+
+function blackjackEmbed(game, finishedText = null) {
+  const playerTotal =
+    handValue(
+      game.player
+    );
+
+  const dealerTotal =
+    handValue(
+      game.dealer
+    );
+
+  return new EmbedBuilder()
+    .setColor(
+      finishedText
+        ? "Gold"
+        : "Blue"
+    )
+    .setTitle(
+      "🃏 The Club Blackjack"
+    )
+    .setDescription(
+      [
+        `💰 הימור: **${formatXp(game.bet)} XP**`,
+        "",
+        `👤 היד שלך: **${game.player.join(" • ")}**`,
+        `סה״כ: **${playerTotal}**`,
+        "",
+        finishedText
+          ? `🤖 הדילר: **${game.dealer.join(" • ")}**\\nסה״כ: **${dealerTotal}**`
+          : `🤖 הדילר: **${game.dealer[0]} • ?**`,
+        "",
+        finishedText ||
+          "בחר **Hit** או **Stand**."
+      ].join("\\n")
+    )
+    .setFooter({
+      text:
+        "Virtual XP only • No real money"
+    })
+    .setTimestamp();
+}
+
+async function finishBlackjack(
+  interaction,
+  game
+) {
+  while (
+    handValue(
+      game.dealer
+    ) < 17
+  ) {
+    game.dealer.push(
+      drawCard()
+    );
+  }
+
+  const playerTotal =
+    handValue(
+      game.player
+    );
+
+  const dealerTotal =
+    handValue(
+      game.dealer
+    );
+
+  let resultText;
+
+  if (playerTotal > 21) {
+    changeXp(
+      game.guildId,
+      game.userId,
+      -game.bet
+    );
+
+    resultText =
+      `💥 עברת 21. הפסדת **${formatXp(game.bet)} XP**.`;
+  } else if (
+    dealerTotal > 21 ||
+    playerTotal > dealerTotal
+  ) {
+    changeXp(
+      game.guildId,
+      game.userId,
+      game.bet
+    );
+
+    resultText =
+      `🏆 ניצחת וקיבלת **${formatXp(game.bet)} XP**.`;
+  } else if (
+    playerTotal < dealerTotal
+  ) {
+    changeXp(
+      game.guildId,
+      game.userId,
+      -game.bet
+    );
+
+    resultText =
+      `❌ הדילר ניצח. הפסדת **${formatXp(game.bet)} XP**.`;
+  } else {
+    resultText =
+      "🤝 תיקו — ה־XP שלך לא השתנה.";
+  }
+
+  blackjackGames.delete(
+    `${game.guildId}:${game.userId}`
+  );
+
+  return interaction.update({
+    embeds: [
+      blackjackEmbed(
+        game,
+        resultText
+      )
+    ],
+    components: []
+  });
 }
 
 function canSendPanel(member, guild) {
@@ -152,10 +506,10 @@ function safeChannelName(username) {
 function buildTicketPanel() {
   const embed = new EmbedBuilder()
     .setColor("Blue")
-    .setTitle("🎫 Israel Army • מרכז טיקטים")
+    .setTitle("🎫 The Club • מרכז טיקטים")
     .setDescription(
       [
-        "ברוכים הבאים למרכז התמיכה של **Israel Army**.",
+        "ברוכים הבאים למרכז התמיכה של **The Club**.",
         "",
         "בחרו את סוג הפנייה שמתאים לכם באמצעות הכפתורים למטה.",
         "",
@@ -171,7 +525,7 @@ function buildTicketPanel() {
         "⚠️ פתיחת טיקט ללא סיבה או ספאם עלולה להוביל לסגירת הטיקט."
       ].join("\n")
     )
-    .setFooter({ text: "Israel Army • Ticket System" })
+    .setFooter({ text: "The Club • Ticket System" })
     .setTimestamp();
 
   if (client.user) {
@@ -270,7 +624,7 @@ function buildRoleExamEmbeds() {
           "✅ לאחר שסיימת לענות, המתן לצוות."
         ].join("\n")
       )
-      .setFooter({ text: "Israel Army • Role Exam" })
+      .setFooter({ text: "The Club • Role Exam" })
       .setTimestamp()
   ];
 }
@@ -366,7 +720,7 @@ async function openTicket(interaction, type) {
       ].join("\n")
     )
     .setThumbnail(interaction.user.displayAvatarURL({ size: 256 }))
-    .setFooter({ text: "Israel Army • Ticket System" })
+    .setFooter({ text: "The Club • Ticket System" })
     .setTimestamp();
 
   await channel.send({
@@ -499,7 +853,7 @@ async function closeTicket(interaction, reason) {
 }
 
 client.once(Events.ClientReady, readyClient => {
-  console.log(`✅ Israel Army Bot Ticket online as ${readyClient.user.tag}`);
+  console.log(`✅ The Club Bot online as ${readyClient.user.tag}`);
 });
 
 client.on(Events.InteractionCreate, async interaction => {
@@ -520,6 +874,88 @@ client.on(Events.InteractionCreate, async interaction => {
           flags: MessageFlags.Ephemeral
         });
       }
+    }
+
+    if (
+      interaction.isButton() &&
+      (
+        interaction.customId.startsWith("bj_hit:") ||
+        interaction.customId.startsWith("bj_stand:")
+      )
+    ) {
+      const ownerId =
+        interaction.customId.split(":")[1];
+
+      if (
+        interaction.user.id !==
+        ownerId
+      ) {
+        return interaction.reply({
+          content:
+            "❌ זה לא משחק ה־Blackjack שלך.",
+          flags:
+            MessageFlags.Ephemeral
+        });
+      }
+
+      const key =
+        `${interaction.guild.id}:${ownerId}`;
+
+      const game =
+        blackjackGames.get(key);
+
+      if (!game) {
+        return interaction.update({
+          content:
+            "❌ המשחק כבר הסתיים או שפג תוקפו.",
+          embeds: [],
+          components: []
+        });
+      }
+
+      if (
+        interaction.customId.startsWith(
+          "bj_hit:"
+        )
+      ) {
+        game.player.push(
+          drawCard()
+        );
+
+        const playerTotal =
+          handValue(
+            game.player
+          );
+
+        if (
+          playerTotal >= 21
+        ) {
+          return finishBlackjack(
+            interaction,
+            game
+          );
+        }
+
+        blackjackGames.set(
+          key,
+          game
+        );
+
+        return interaction.update({
+          embeds: [
+            blackjackEmbed(game)
+          ],
+          components:
+            blackjackButtons(
+              ownerId
+            )
+        });
+      }
+
+      return finishBlackjack(
+        interaction,
+        game
+      );
     }
 
     if (
@@ -797,6 +1233,633 @@ client.on(Events.InteractionCreate, async interaction => {
     }
   }
 });
+
+client.on(
+  Events.MessageCreate,
+  async message => {
+    if (
+      !message.guild ||
+      message.author.bot
+    ) {
+      return;
+    }
+
+    const guildId =
+      message.guild.id;
+
+    const userId =
+      message.author.id;
+
+    // XP from normal messages.
+    const cooldownKey =
+      `${guildId}:${userId}`;
+
+    const lastXp =
+      messageXpCooldowns.get(
+        cooldownKey
+      ) || 0;
+
+    const xpCooldownMs =
+      Number(
+        config.xpMessageCooldownMs ||
+        60000
+      );
+
+    if (
+      Date.now() - lastXp >=
+      xpCooldownMs
+    ) {
+      const min =
+        Number(
+          config.xpPerMessageMin ||
+          5
+        );
+
+      const max =
+        Number(
+          config.xpPerMessageMax ||
+          15
+        );
+
+      const profile =
+        getXpProfile(
+          guildId,
+          userId
+        );
+
+      profile.xp +=
+        randomInt(
+          Math.min(min, max),
+          Math.max(min, max)
+        );
+
+      profile.messages += 1;
+
+      messageXpCooldowns.set(
+        cooldownKey,
+        Date.now()
+      );
+
+      saveXpData();
+    }
+
+    const prefix =
+      String(
+        config.xpPrefix ||
+        "!"
+      );
+
+    if (
+      !message.content.startsWith(
+        prefix
+      )
+    ) {
+      return;
+    }
+
+    const parts =
+      message.content
+        .slice(prefix.length)
+        .trim()
+        .split(/\s+/);
+
+    const command =
+      String(
+        parts.shift() ||
+        ""
+      ).toLowerCase();
+
+    if (!command) {
+      return;
+    }
+
+    const profile =
+      getXpProfile(
+        guildId,
+        userId
+      );
+
+    if (
+      command === "xp" ||
+      command === "balance" ||
+      command === "bal"
+    ) {
+      return message.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setColor("Blue")
+            .setTitle(
+              "💰 XP Balance"
+            )
+            .setDescription(
+              `${message.author}, יש לך **${formatXp(profile.xp)} XP**.`
+            )
+            .setFooter({
+              text:
+                "The Club • Virtual XP"
+            })
+        ]
+      });
+    }
+
+    if (command === "casino") {
+      return message.reply({
+        embeds: [
+          casinoInfoEmbed()
+        ]
+      });
+    }
+
+    if (command === "daily") {
+      const now =
+        Date.now();
+
+      const dailyMs =
+        24 * 60 * 60 * 1000;
+
+      const left =
+        dailyMs -
+        (
+          now -
+          Number(
+            profile.lastDailyAt ||
+            0
+          )
+        );
+
+      if (left > 0) {
+        const hours =
+          Math.floor(
+            left /
+            (60 * 60 * 1000)
+          );
+
+        const minutes =
+          Math.ceil(
+            (
+              left %
+              (60 * 60 * 1000)
+            ) /
+            (60 * 1000)
+          );
+
+        return message.reply(
+          `⏳ כבר לקחת Daily. חזור בעוד **${hours} שעות ו־${minutes} דקות**.`
+        );
+      }
+
+      const min =
+        Number(
+          config.dailyXpMin ||
+          250
+        );
+
+      const max =
+        Number(
+          config.dailyXpMax ||
+          500
+        );
+
+      const reward =
+        randomInt(
+          Math.min(min, max),
+          Math.max(min, max)
+        );
+
+      profile.lastDailyAt =
+        now;
+
+      profile.xp +=
+        reward;
+
+      saveXpData();
+
+      return message.reply(
+        `🎁 קיבלת **${formatXp(reward)} XP**! עכשיו יש לך **${formatXp(profile.xp)} XP**.`
+      );
+    }
+
+    if (
+      command === "leaderboard" ||
+      command === "lb"
+    ) {
+      const guildData =
+        getGuildXp(guildId);
+
+      const top =
+        Object.entries(
+          guildData.users
+        )
+          .sort(
+            (a, b) =>
+              Number(
+                b[1].xp || 0
+              ) -
+              Number(
+                a[1].xp || 0
+              )
+          )
+          .slice(0, 10);
+
+      if (!top.length) {
+        return message.reply(
+          "📊 עדיין אין נתוני XP."
+        );
+      }
+
+      const lines =
+        top.map(
+          (
+            [id, data],
+            index
+          ) =>
+            `**${index + 1}.** <@${id}> — **${formatXp(data.xp)} XP**`
+        );
+
+      return message.reply({
+        embeds: [
+          new EmbedBuilder()
+            .setColor("Gold")
+            .setTitle(
+              "🏆 The Club XP Leaderboard"
+            )
+            .setDescription(
+              lines.join("\\n")
+            )
+            .setTimestamp()
+        ]
+      });
+    }
+
+    if (
+      command === "coinflip"
+    ) {
+      const check =
+        casinoCheck(
+          guildId,
+          userId,
+          parts[0]
+        );
+
+      if (!check.ok) {
+        return message.reply(
+          check.message
+        );
+      }
+
+      const choice =
+        String(
+          parts[1] || ""
+        ).toLowerCase();
+
+      const normalized =
+        {
+          "heads": "heads",
+          "head": "heads",
+          "עץ": "heads",
+          "tails": "tails",
+          "tail": "tails",
+          "פלי": "tails"
+        }[choice];
+
+      if (!normalized) {
+        casinoCooldowns.delete(
+          `${guildId}:${userId}`
+        );
+
+        return message.reply(
+          `❌ שימוש: \`${prefix}coinflip <xp> <heads/tails>\``
+        );
+      }
+
+      const result =
+        Math.random() < 0.5
+          ? "heads"
+          : "tails";
+
+      const won =
+        result ===
+        normalized;
+
+      changeXp(
+        guildId,
+        userId,
+        won
+          ? check.bet
+          : -check.bet
+      );
+
+      return message.reply(
+        `${won ? "🏆" : "❌"} יצא **${result}** — ${
+          won
+            ? `ניצחת ${formatXp(check.bet)} XP`
+            : `הפסדת ${formatXp(check.bet)} XP`
+        }.`
+      );
+    }
+
+    if (command === "dice") {
+      const check =
+        casinoCheck(
+          guildId,
+          userId,
+          parts[0]
+        );
+
+      if (!check.ok) {
+        return message.reply(
+          check.message
+        );
+      }
+
+      const guess =
+        Number(parts[1]);
+
+      if (
+        !Number.isInteger(guess) ||
+        guess < 1 ||
+        guess > 6
+      ) {
+        casinoCooldowns.delete(
+          `${guildId}:${userId}`
+        );
+
+        return message.reply(
+          `❌ שימוש: \`${prefix}dice <xp> <1-6>\``
+        );
+      }
+
+      const result =
+        randomInt(1, 6);
+
+      const won =
+        result === guess;
+
+      const change =
+        won
+          ? check.bet * 5
+          : -check.bet;
+
+      changeXp(
+        guildId,
+        userId,
+        change
+      );
+
+      return message.reply(
+        `🎲 יצא **${result}** — ${
+          won
+            ? `🏆 פגעת במספר וקיבלת ${formatXp(check.bet * 5)} XP`
+            : `❌ הפסדת ${formatXp(check.bet)} XP`
+        }.`
+      );
+    }
+
+    if (command === "slots") {
+      const check =
+        casinoCheck(
+          guildId,
+          userId,
+          parts[0]
+        );
+
+      if (!check.ok) {
+        return message.reply(
+          check.message
+        );
+      }
+
+      const symbols = [
+        "🍒",
+        "🍋",
+        "🔔",
+        "⭐",
+        "💎"
+      ];
+
+      const spin = [
+        symbols[
+          randomInt(
+            0,
+            symbols.length - 1
+          )
+        ],
+        symbols[
+          randomInt(
+            0,
+            symbols.length - 1
+          )
+        ],
+        symbols[
+          randomInt(
+            0,
+            symbols.length - 1
+          )
+        ]
+      ];
+
+      const allSame =
+        spin[0] === spin[1] &&
+        spin[1] === spin[2];
+
+      const pair =
+        spin[0] === spin[1] ||
+        spin[0] === spin[2] ||
+        spin[1] === spin[2];
+
+      let change;
+      let text;
+
+      if (allSame) {
+        change =
+          check.bet * 3;
+
+        text =
+          `🏆 JACKPOT! קיבלת **${formatXp(change)} XP**.`;
+      } else if (pair) {
+        change =
+          check.bet;
+
+        text =
+          `✨ זוג! קיבלת **${formatXp(change)} XP**.`;
+      } else {
+        change =
+          -check.bet;
+
+        text =
+          `❌ הפסדת **${formatXp(check.bet)} XP**.`;
+      }
+
+      changeXp(
+        guildId,
+        userId,
+        change
+      );
+
+      return message.reply(
+        `🎰 ${spin.join(" | ")}\\n${text}`
+      );
+    }
+
+    if (command === "roulette") {
+      const check =
+        casinoCheck(
+          guildId,
+          userId,
+          parts[0]
+        );
+
+      if (!check.ok) {
+        return message.reply(
+          check.message
+        );
+      }
+
+      const choice =
+        String(
+          parts[1] || ""
+        ).toLowerCase();
+
+      if (
+        ![
+          "red",
+          "black",
+          "green"
+        ].includes(choice)
+      ) {
+        casinoCooldowns.delete(
+          `${guildId}:${userId}`
+        );
+
+        return message.reply(
+          `❌ שימוש: \`${prefix}roulette <xp> <red/black/green>\``
+        );
+      }
+
+      const roll =
+        randomInt(0, 36);
+
+      let result;
+
+      if (roll === 0) {
+        result = "green";
+      } else {
+        result =
+          roll % 2 === 0
+            ? "black"
+            : "red";
+      }
+
+      const won =
+        choice === result;
+
+      const reward =
+        choice === "green"
+          ? check.bet * 14
+          : check.bet;
+
+      changeXp(
+        guildId,
+        userId,
+        won
+          ? reward
+          : -check.bet
+      );
+
+      return message.reply(
+        `🎡 יצא **${roll} • ${result}** — ${
+          won
+            ? `🏆 קיבלת ${formatXp(reward)} XP`
+            : `❌ הפסדת ${formatXp(check.bet)} XP`
+        }.`
+      );
+    }
+
+    if (
+      command === "blackjack" ||
+      command === "bj"
+    ) {
+      const check =
+        casinoCheck(
+          guildId,
+          userId,
+          parts[0]
+        );
+
+      if (!check.ok) {
+        return message.reply(
+          check.message
+        );
+      }
+
+      const key =
+        `${guildId}:${userId}`;
+
+      if (
+        blackjackGames.has(key)
+      ) {
+        casinoCooldowns.delete(
+          key
+        );
+
+        return message.reply(
+          "❌ כבר יש לך משחק Blackjack פעיל."
+        );
+      }
+
+      const game = {
+        guildId,
+        userId,
+        bet:
+          check.bet,
+        player: [
+          drawCard(),
+          drawCard()
+        ],
+        dealer: [
+          drawCard(),
+          drawCard()
+        ]
+      };
+
+      blackjackGames.set(
+        key,
+        game
+      );
+
+      if (
+        handValue(
+          game.player
+        ) >= 21
+      ) {
+        const sent =
+          await message.reply({
+            embeds: [
+              blackjackEmbed(
+                game
+              )
+            ],
+            components:
+              blackjackButtons(
+                userId
+              )
+          });
+
+        return sent;
+      }
+
+      return message.reply({
+        embeds: [
+          blackjackEmbed(game)
+        ],
+        components:
+          blackjackButtons(
+            userId
+          )
+      });
+    }
+  }
+);
 
 client.on("error", error => {
   console.error("❌ Discord client error:", error);
